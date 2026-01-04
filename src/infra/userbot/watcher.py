@@ -79,13 +79,38 @@ def setup_handlers(app: Client) -> None:
                 len(text),
             )
 
-            # Prefer forward (keeps media); fallback to text-only
+            # Prefer forward (keeps media & forward metadata). If it fails, try copy with embedded source tag.
+            src_tag = f"\n\n#src:{getattr(msg.chat, 'id', 0)}:{msg.id}"
             try:
                 await msg.forward(settings.ingest_bot_username)
-                logger.info("Userbot: forwarded msg_id=%s from %s", msg.id, username or getattr(msg.chat, "id", None))
+                logger.info("Userbot: forwarded msg_id=%s from %s", msg.id, username or getattr(msg.chat, 'id', None))
             except Exception as e:
-                logger.warning("Userbot: forward failed (%s). Sending text-only.", e)
-                if text:
-                    await client.send_message(settings.ingest_bot_username, text)
+                logger.warning("Userbot: forward failed (%s). Trying copy_message.", e)
+                try:
+                    is_media = bool(getattr(msg, 'photo', None) or getattr(msg, 'document', None) or getattr(msg, 'video', None) or getattr(msg, 'animation', None))
+                    if is_media:
+                        # For media messages we can override caption to include source tag.
+                        cap = _extract_text(msg)
+                        cap = (cap + src_tag).strip() if cap else src_tag.strip()
+                        await client.copy_message(
+                            chat_id=settings.ingest_bot_username,
+                            from_chat_id=getattr(msg.chat, 'id', 0),
+                            message_id=msg.id,
+                            caption=cap,
+                        )
+                        logger.info("Userbot: copied msg_id=%s from %s", msg.id, username or getattr(msg.chat, 'id', None))
+                    else:
+                        # Text-only: send the text with embedded source tag.
+                        t = (_extract_text(msg) + src_tag).strip()
+                        if t:
+                            await client.send_message(settings.ingest_bot_username, t)
+                except Exception as e2:
+                    logger.warning("Userbot: copy/send fallback failed (%s).", e2)
+                    t = (_extract_text(msg) + src_tag).strip()
+                    if t:
+                        try:
+                            await client.send_message(settings.ingest_bot_username, t)
+                        except Exception:
+                            pass
         except Exception:
             logger.exception("Userbot failed in on_channel_post")

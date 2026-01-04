@@ -7,6 +7,7 @@ from aiogram import Bot
 from aiogram.types import FSInputFile
 
 from src.infra.telegram.keyboards import review_keyboard
+from src.common.tg_text import prepare_photo_caption, tg_utf16_clip
 
 logger = logging.getLogger(__name__)
 
@@ -15,10 +16,7 @@ TEXT_LIMIT = 4096
 
 
 def _clip(text: str, limit: int) -> str:
-    text = (text or "").strip()
-    if len(text) <= limit:
-        return text
-    return text[: max(0, limit - 1)].rstrip() + "…"
+    return tg_utf16_clip(text or "", limit)
 
 
 class AdminNotifier:
@@ -33,10 +31,12 @@ class AdminNotifier:
             img_path = image_paths[0]
             if not Path(img_path).exists():
                 logger.warning("Image path does not exist: %s", img_path)
+            cap_for_photo, _overflow, cap_parse_mode = prepare_photo_caption(caption, caption_limit=PHOTO_CAPTION_LIMIT)
             msg = await self.bot.send_photo(
                 chat_id=chat_id,
                 photo=FSInputFile(img_path),
-                caption=_clip(caption, PHOTO_CAPTION_LIMIT),
+                caption=cap_for_photo,
+                parse_mode=cap_parse_mode,
                 reply_markup=review_keyboard(draft_id),
             )
             return msg.message_id
@@ -44,6 +44,7 @@ class AdminNotifier:
         msg = await self.bot.send_message(
             chat_id=chat_id,
             text=_clip(caption, TEXT_LIMIT) or f"Draft #{draft_id}",
+            parse_mode="HTML",
             reply_markup=review_keyboard(draft_id),
         )
         return msg.message_id

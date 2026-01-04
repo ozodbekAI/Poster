@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from aiogram import Router, Bot, F
 from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,6 +28,29 @@ def _extract_text(message: Message) -> str:
     return (message.text or message.caption or "").strip()
 
 
+_SRC_RE = re.compile(r"(?:^|\s)#src:(-?\d+):(\d+)\s*$")
+
+
+def _strip_src_tag(text: str) -> tuple[str, tuple[int, int] | None]:
+    """Return (clean_text, (source_chat_id, source_message_id) or None).
+
+    Userbot may embed the source in the caption/text when forwarding is not possible.
+    Format: #src:<chat_id>:<message_id> (expected to be at the end).
+    """
+    t = (text or "").strip()
+    m = _SRC_RE.search(t)
+    if not m:
+        return t, None
+    try:
+        chat_id = int(m.group(1))
+        msg_id = int(m.group(2))
+    except Exception:
+        return t, None
+    # Remove only the trailing tag
+    cleaned = _SRC_RE.sub("", t).strip()
+    return cleaned, (chat_id, msg_id)
+
+
 async def _extract_image_urls(message: Message, bot: Bot, *, max_images: int = 3) -> list[str]:
 
     urls: list[str] = []
@@ -51,12 +75,13 @@ async def ingest_any(message: Message, db: AsyncSession, bot: Bot):
 
     if message.chat.type != "private":
         return
-
     text = _extract_text(message)
+    text, src_tag = _strip_src_tag(text)
 
-    src = _extract_forward_source(message)
+    src = _extract_forward_source(message) or src_tag
     if not src:
-        return
+        # Fallback: treat the incoming private message as the source (avoids silent drops).
+        src = (message.chat.id, message.message_id)
 
     source_chat_id, source_message_id = src
 

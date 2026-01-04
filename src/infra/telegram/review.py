@@ -12,6 +12,7 @@ from src.common.config import settings
 from src.infra.db.repositories import DraftRepo
 from src.infra.telegram.callbacks import DraftCb
 from src.infra.telegram.keyboards import review_keyboard, regen_keyboard
+from src.common.tg_text import prepare_photo_caption, tg_utf16_clip
 from src.usecases.regenerate import regenerate_draft
 
 logger = logging.getLogger(__name__)
@@ -39,14 +40,15 @@ async def _render_review_message(cb: CallbackQuery, *, draft_id: int, db: AsyncS
 
     try:
         if d.image_paths:
+            cap_for_photo, _overflow, cap_parse_mode = prepare_photo_caption(d.caption or "(пусто)")
             media = InputMediaPhoto(
                 media=FSInputFile(d.image_paths[0]),
-                caption=d.caption or "(пусто)",
-                parse_mode="HTML",
+                caption=cap_for_photo,
+                parse_mode=cap_parse_mode,
             )
             await cb.message.edit_media(media=media, reply_markup=review_keyboard(d.id))
         else:
-            await cb.message.edit_text(d.caption or "(пусто)", reply_markup=review_keyboard(d.id), parse_mode="HTML")
+            await cb.message.edit_text(tg_utf16_clip(d.caption or "(пусто)", 4096), reply_markup=review_keyboard(d.id), parse_mode="HTML")
     except TelegramBadRequest as e:
         if "message is not modified" in str(e):
             return
@@ -69,10 +71,12 @@ async def on_review(cb: CallbackQuery, callback_data: DraftCb, db: AsyncSession,
     # Approve / Reject
     # -----------------
     if action == "approve":
+        # Approve means: publish the ALREADY generated draft (no regen here).
         await cb.answer("✅ Одобрено", show_alert=False)
+
         await draft_repo.set_status(draft_id, "approved")
         await _safe_edit_reply_markup(cb, None)
-        await cb.message.answer(f"✅ Draft #{draft_id} ОДОБРЕН (в очереди)")
+        await cb.message.answer(f"✅ Draft #{draft_id} ОДОБРЕН и поставлен в очередь")
         return
 
     if action == "reject":

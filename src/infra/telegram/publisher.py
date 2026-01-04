@@ -5,6 +5,7 @@ from aiogram import Bot
 from aiogram.types import FSInputFile
 from src.common.deeplink import make_external_bot_url
 from src.common.config import settings
+from src.common.tg_text import prepare_photo_caption, chunk_text
 from src.infra.telegram.keyboards import url_keyboard
 
 logger = logging.getLogger(__name__)
@@ -13,13 +14,9 @@ logger = logging.getLogger(__name__)
 _CAPTION_LIMIT = 1024
 
 
-def _split_caption(text: str) -> tuple[str, str | None]:
-    """Return (caption_for_photo, full_text_or_none)."""
-    t = (text or "").strip()
-    if len(t) <= _CAPTION_LIMIT:
-        return t, None
-    head = (t[: _CAPTION_LIMIT - 1].rstrip() + "…")
-    return head, t
+def _split_caption(text: str) -> tuple[str, str | None, str | None]:
+    """Return (caption_for_photo, overflow_text_or_none, parse_mode_or_none)."""
+    return prepare_photo_caption(text, caption_limit=_CAPTION_LIMIT)
 
 class ChannelPublisher:
     def __init__(self, bot: Bot):
@@ -39,7 +36,7 @@ class ChannelPublisher:
         btext = button_text or settings.external_button_text
         url = make_external_bot_url(bname, token)
 
-        cap_for_photo, full_text = _split_caption(caption)
+        cap_for_photo, full_text, cap_parse_mode = _split_caption(caption)
 
         if not image_paths:
             # For text-only posts Telegram allows much longer messages.
@@ -50,13 +47,19 @@ class ChannelPublisher:
             chat_id=destination,
             photo=FSInputFile(image_paths[0]),
             caption=cap_for_photo,
+            parse_mode=cap_parse_mode,
             reply_markup=url_keyboard(btext, url),
         )
 
         # If caption was longer than 1024, send the full text as a follow-up message.
         if full_text:
             try:
-                await self.bot.send_message(chat_id=destination, text=full_text, reply_to_message_id=msg.message_id)
+                for part in chunk_text(full_text, limit=4096):
+                    await self.bot.send_message(
+                        chat_id=destination,
+                        text=part,
+                        reply_to_message_id=msg.message_id,
+                    )
             except Exception as e:
                 logger.warning("Failed to send full caption as follow-up message: %s", e)
 
